@@ -1,0 +1,613 @@
+// AgroVax - modelo de dados
+//
+// Convencoes:
+// - Multi-tenant: toda tabela de dados do produtor tem `farmId`. A API nunca
+//   consulta essas tabelas sem filtrar pela fazenda do usuario autenticado.
+// - Offline-first: os registros sincronizaveis usam UUID gerado no aparelho
+//   (o mesmo id vale no celular e no servidor), exclusao logica (`deletedAt`),
+//   `version` (controle de conflito) e `syncSeq` (cursor da sincronizacao
+//   incremental, numerado por fazenda a partir de `Farm.syncSeq`).
+// - Catalogos globais (doencas, sintomas, vigilancia) nao pertencem a uma
+//   fazenda e carregam `isDemo` para identificar conteudo demonstrativo.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------- enums
+
+enum Species {
+  BOVINE
+  EQUINE
+}
+
+enum Sex {
+  MALE
+  FEMALE
+}
+
+enum AnimalStatus {
+  ACTIVE
+  SOLD
+  DEAD
+  TRANSFERRED
+}
+
+enum Purpose {
+  BEEF
+  DAIRY
+}
+
+enum Category {
+  CALF
+  HEIFER
+  COW
+  BULL
+  STEER
+  HORSE
+  MARE
+  FOAL
+  STALLION
+}
+
+enum TreatmentType {
+  DEWORMER
+  TICK_CONTROL
+  FLY_CONTROL
+  OTHER
+}
+
+enum SymptomIntensity {
+  MILD
+  MODERATE
+  SEVERE
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum HealthEventType {
+  EXAM
+  VET_VISIT
+  NOTE
+  OTHER
+}
+
+enum AlertKind {
+  VACCINATION_DUE
+  VACCINATION_OVERDUE
+  TREATMENT_DUE
+  TREATMENT_OVERDUE
+}
+
+enum MemberRole {
+  OWNER
+  MANAGER
+  WORKER
+}
+
+enum PlanCode {
+  FREE
+  PRO
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  TRIALING
+  PAST_DUE
+  CANCELED
+  EXPIRED
+}
+
+enum SyncAction {
+  UPSERT
+  DELETE
+}
+
+enum SyncResult {
+  APPLIED
+  CONFLICT
+  REJECTED
+}
+
+// ------------------------------------------------- contas e autenticacao
+
+model User {
+  id              String   @id @default(uuid()) @db.Uuid
+  email           String   @unique
+  name            String
+  passwordHash    String
+  /// Administrador da plataforma AgroVax (nao confundir com dono de fazenda).
+  isPlatformAdmin Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  memberships    Membership[]
+  refreshTokens  RefreshToken[]
+  passwordResets PasswordResetToken[]
+  syncOperations SyncOperation[]
+}
+
+/// Sessao persistente. Guarda apenas o hash do token; o token e rotacionado a cada uso.
+model RefreshToken {
+  id           String    @id @default(uuid()) @db.Uuid
+  userId       String    @db.Uuid
+  tokenHash    String    @unique
+  /// Todos os tokens gerados por rotacao a partir do mesmo login.
+  familyId     String    @db.Uuid
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  replacedById String?   @db.Uuid
+  createdAt    DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([familyId])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  codeHash  String
+  expiresAt DateTime
+  usedAt    DateTime?
+  attempts  Int       @default(0)
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ------------------------------------------- fazenda (tenant) e assinatura
+
+/// Fazenda/organizacao: a unidade de isolamento de dados (tenant).
+model Farm {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  city      String?
+  state     String?  @db.Char(2)
+  /// Contador de alteracoes da fazenda; cada gravacao sincronizavel o incrementa.
+  syncSeq   BigInt   @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships    Membership[]
+  subscription   Subscription?
+  animals        Animal[]
+  animalPhotos   AnimalPhoto[]
+  lots           Lot[]
+  vaccinations   Vaccination[]
+  treatments     PreventiveTreatment[]
+  symptomRecords SymptomRecord[]
+  healthEvents   HealthEvent[]
+  alerts         Alert[]
+  syncOperations SyncOperation[]
+}
+
+model Membership {
+  id        String     @id @default(uuid()) @db.Uuid
+  userId    String     @db.Uuid
+  farmId    String     @db.Uuid
+  role      MemberRole @default(OWNER)
+  createdAt DateTime   @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  farm Farm @relation(fields: [farmId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, farmId])
+  @@index([farmId])
+}
+
+model Plan {
+  id         String   @id @default(uuid()) @db.Uuid
+  code       PlanCode @unique
+  name       String
+  /// Ex.: { "maxAnimals": 50, "maxLots": 3, "maxUsers": 1 } - null = sem limite.
+  limits     Json
+  /// Feature flags. Ex.: { "surveillance": true }
+  features   Json
+  /// Preco mensal em centavos (informativo; a cobranca ainda nao esta integrada).
+  priceCents Int      @default(0)
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  subscriptions Subscription[]
+}
+
+model Subscription {
+  id        String             @id @default(uuid()) @db.Uuid
+  farmId    String             @unique @db.Uuid
+  planId    String             @db.Uuid
+  status    SubscriptionStatus @default(ACTIVE)
+  startedAt DateTime           @default(now())
+  /// null = sem vencimento (plano gratuito).
+  expiresAt DateTime?
+  /// Identificadores do gateway de pagamento, preenchidos quando houver cobranca.
+  provider           String?
+  providerCustomerId String?
+  providerSubId      String?
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  farm Farm @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  plan Plan @relation(fields: [planId], references: [id])
+
+  @@index([planId])
+}
+
+// ---------------------------------------------------- animais e lotes
+
+model Animal {
+  id        String       @id @db.Uuid
+  farmId    String       @db.Uuid
+  /// Lote ao qual o animal esta vinculado (opcional).
+  lotId     String?      @db.Uuid
+  /// Numero do brinco / identificacao.
+  tag       String
+  name      String?
+  species   Species
+  sex       Sex
+  birthDate DateTime?    @db.Date
+  breed     String?
+  category  Category?
+  purpose   Purpose?
+  ownerName String?
+  status    AnimalStatus @default(ACTIVE)
+  notes     String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+  version   Int       @default(1)
+  syncSeq   BigInt    @default(0)
+
+  farm           Farm                  @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  lot            Lot?                  @relation(fields: [lotId], references: [id], onDelete: SetNull)
+  photos         AnimalPhoto[]
+  vaccinations   Vaccination[]
+  treatments     PreventiveTreatment[]
+  symptomRecords SymptomRecord[]
+  healthEvents   HealthEvent[]
+  alerts         Alert[]
+
+  @@index([farmId, syncSeq])
+  @@index([farmId, tag])
+  @@index([farmId, species])
+  @@index([lotId])
+}
+
+model AnimalPhoto {
+  id         String  @id @db.Uuid
+  farmId     String  @db.Uuid
+  animalId   String  @db.Uuid
+  /// Chave do arquivo no armazenamento; null enquanto o upload nao foi feito.
+  storageKey String?
+  isPrimary  Boolean @default(true)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+  version   Int       @default(1)
+  syncSeq   BigInt    @default(0)
+
+  farm   Farm   @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  animal Animal @relation(fields: [animalId], references: [id], onDelete: Cascade)
+
+  @@index([farmId, syncSeq])
+  @@index([animalId])
+}
+
+/// Lote/rebanho. Pode existir sem nenhum animal cadastrado individualmente:
+/// `declaredQuantity` e o numero de cabecas informado pelo produtor, e os
+/// animais vinculados (Animal.lotId) sao um subconjunto identificado.
+model Lot {
+  id               String    @id @db.Uuid
+  farmId           String    @db.Uuid
+  name             String
+  declaredQuantity Int
+  species          Species
+  category         Category?
+  purpose          Purpose?
+  ageRange         String?
+  location         String?
+  notes            String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+  version   Int       @default(1)
+  syncSeq   BigInt    @default(0)
+
+  farm           Farm                  @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  animals        Animal[]
+  vaccinations   Vaccination[]
+  treatments     PreventiveTreatment[]
+  symptomRecords SymptomRecord[]
+  healthEvents   HealthEvent[]
+  alerts         Alert[]
+
+  @@index([farmId, syncSeq])
+  @@index([farmId, species])
+}
+
+// ------------------------------------------------- registros sanitarios
+//
+// Vacinacao, tratamento, sintoma e evento apontam para um animal OU para um
+// lote (restricao CHECK na migration). Um registro de lote e a fonte da
+// verdade; para cada animal vinculado ao lote na data do registro e criada
+// uma copia individual com `parentId` apontando para o registro do lote,
+// de modo que o historico acompanha o animal mesmo que ele mude de lote.
+
+model Vaccination {
+  id          String    @id @db.Uuid
+  farmId      String    @db.Uuid
+  animalId    String?   @db.Uuid
+  lotId       String?   @db.Uuid
+  parentId    String?   @db.Uuid
+  vaccineName String
+  appliedAt   DateTime  @db.Date
+  nextDoseAt  DateTime? @db.Date
+  responsible String?
+  notes       String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+  version   Int       @default(1)
+  syncSeq   BigInt    @default(0)
+
+  farm     Farm          @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  animal   Animal?       @relation(fields: [animalId], references: [id], onDelete: Cascade)
+  lot      Lot?          @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  parent   Vaccination?  @relation("VaccinationFanOut", fields: [parentId], references: [id], onDelete: Cascade)
+  children Vaccination[] @relation("VaccinationFanOut")
+
+  @@index([farmId, syncSeq])
+  @@index([farmId, nextDoseAt])
+  @@index([animalId])
+  @@index([lotId])
+  @@index([parentId])
+}
+
+model PreventiveTreatment {
+  id                String        @id @db.Uuid
+  farmId            String        @db.Uuid
+  animalId          String?       @db.Uuid
+  lotId             String?       @db.Uuid
+  parentId          String?       @db.Uuid
+  type              TreatmentType
+  product           String
+  appliedAt         DateTime      @db.Date
+  nextApplicationAt DateTime?     @db.Date
+  responsible       String?
+  notes             String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+  version   Int       @default(1)
+  syncSeq   BigInt    @default(0)
+
+  farm     Farm                  @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  animal   Animal?               @relation(fields: [animalId], references: [id], onDelete: Cascade)
+  lot      Lot?                  @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  parent   PreventiveTreatment?  @relation("TreatmentFanOut", fields: [parentId], references: [id], onDelete: Cascade)
+  children PreventiveTreatment[] @relation("TreatmentFanOut")
+
+  @@index([farmId, syncSeq])
+  @@index([farmId, nextApplicationAt])
+  @@index([animalId])
+  @@index([lotId])
+  @@index([parentId])
+}
+
+model SymptomRecord {
+  id          String            @id @db.Uuid
+  farmId      String            @db.Uuid
+  animalId    String?           @db.Uuid
+  lotId       String?           @db.Uuid
+  /// Sintoma do catalogo, quando escolhido da lista.
+  symptomId   String?           @db.Uuid
+  /// Nome do sintoma como registrado (preservado mesmo se o catalogo mudar).
+  symptomName String
+  observedAt  DateTime          @db.Date
+  intensity   SymptomIntensity?
+  responsible String?
+  notes       String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+  version   Int       @default(1)
+  syncSeq   BigInt    @default(0)
+
+  farm    Farm     @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  animal  Animal?  @relation(fields: [animalId], references: [id], onDelete: Cascade)
+  lot     Lot?     @relation(fields: [lotId], references: [id], onDelete: Cascade)
+  symptom Symptom? @relation(fields: [symptomId], references: [id], onDelete: SetNull)
+
+  @@index([farmId, syncSeq])
+  @@index([animalId])
+  @@index([lotId])
+}
+
+/// Evento livre da linha do tempo (exame, visita do veterinario, anotacao).
+model HealthEvent {
+  id          String          @id @db.Uuid
+  farmId      String          @db.Uuid
+  animalId    String?         @db.Uuid
+  lotId       String?         @db.Uuid
+  type        HealthEventType @default(NOTE)
+  title       String
+  description String?
+  occurredAt  DateTime        @db.Date
+  responsible String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+  version   Int       @default(1)
+  syncSeq   BigInt    @default(0)
+
+  farm   Farm    @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  animal Animal? @relation(fields: [animalId], references: [id], onDelete: Cascade)
+  lot    Lot?    @relation(fields: [lotId], references: [id], onDelete: Cascade)
+
+  @@index([farmId, syncSeq])
+  @@index([animalId])
+  @@index([lotId])
+}
+
+/// Alerta de vacinacao/tratamento. E calculado no aparelho a partir das datas
+/// de proxima dose; `dedupeKey` (origem + tipo + antecedencia) impede duplicatas.
+model Alert {
+  id            String    @id @db.Uuid
+  farmId        String    @db.Uuid
+  animalId      String?   @db.Uuid
+  lotId         String?   @db.Uuid
+  kind          AlertKind
+  dedupeKey     String
+  /// Registro que originou o alerta (id de Vaccination ou PreventiveTreatment).
+  sourceId      String    @db.Uuid
+  dueDate       DateTime  @db.Date
+  /// Antecedencia em dias (30, 15, 7); null quando vencido.
+  thresholdDays Int?
+  title         String
+  message       String
+  readAt        DateTime?
+  dismissedAt   DateTime?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+  version   Int       @default(1)
+  syncSeq   BigInt    @default(0)
+
+  farm   Farm    @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  animal Animal? @relation(fields: [animalId], references: [id], onDelete: Cascade)
+  lot    Lot?    @relation(fields: [lotId], references: [id], onDelete: Cascade)
+
+  @@unique([farmId, dedupeKey])
+  @@index([farmId, syncSeq])
+}
+
+// ------------------------------------------------- catalogos globais
+
+model Disease {
+  id                     String    @id @default(uuid()) @db.Uuid
+  slug                   String    @unique
+  name                   String
+  species                Species[]
+  causativeAgent         String?
+  transmission           String?
+  mainSymptoms           String?
+  prevention             String?
+  availableVaccines      String?
+  preventiveMedications  String?
+  riskLevel              RiskLevel?
+  /// Origem do conteudo (referencia bibliografica ou orgao oficial).
+  source                 String?
+  /// Conteudo demonstrativo: a interface exibe o selo DEMO.
+  isDemo                 Boolean   @default(false)
+  published              Boolean   @default(true)
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  symptoms           DiseaseSymptom[]
+  surveillanceAlerts SurveillanceAlert[]
+
+  @@index([updatedAt])
+}
+
+model Symptom {
+  id        String   @id @default(uuid()) @db.Uuid
+  slug      String   @unique
+  name      String
+  isDemo    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  diseases DiseaseSymptom[]
+  records  SymptomRecord[]
+
+  @@index([updatedAt])
+}
+
+/// Associacao educativa sintoma <-> doenca. Nunca e usada como diagnostico.
+model DiseaseSymptom {
+  diseaseId String   @db.Uuid
+  symptomId String   @db.Uuid
+  createdAt DateTime @default(now())
+
+  disease Disease @relation(fields: [diseaseId], references: [id], onDelete: Cascade)
+  symptom Symptom @relation(fields: [symptomId], references: [id], onDelete: Cascade)
+
+  @@id([diseaseId, symptomId])
+  @@index([symptomId])
+}
+
+/// Alerta de vigilancia sanitaria (surtos na regiao), vindo de uma fonte
+/// externa ou cadastrado por administrador. `isDemo` marca dados ficticios.
+model SurveillanceAlert {
+  id          String    @id @default(uuid()) @db.Uuid
+  diseaseId   String?   @db.Uuid
+  diseaseName String
+  state       String?   @db.Char(2)
+  region      String
+  reportedAt  DateTime  @db.Date
+  riskLevel   RiskLevel
+  description String
+  guidance    String
+  /// Nome da fonte (ex.: orgao oficial) e link para a publicacao original.
+  sourceName  String
+  sourceUrl   String?
+  /// Chave da integracao que importou o alerta e o id na origem (evita duplicar).
+  providerKey String?
+  externalId  String?
+  isDemo      Boolean   @default(false)
+  active      Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  disease Disease? @relation(fields: [diseaseId], references: [id], onDelete: SetNull)
+
+  @@unique([providerKey, externalId])
+  @@index([updatedAt])
+  @@index([state])
+}
+
+// ------------------------------------------------------ sincronizacao
+
+/// Registro de cada operacao enviada pelo aparelho. O id e gerado no aparelho
+/// e funciona como chave de idempotencia: reenviar a mesma operacao nao a
+/// aplica duas vezes.
+model SyncOperation {
+  id        String     @id @db.Uuid
+  farmId    String     @db.Uuid
+  userId    String     @db.Uuid
+  deviceId  String
+  entity    String
+  recordId  String     @db.Uuid
+  action    SyncAction
+  result    SyncResult
+  /// Detalhe do conflito/rejeicao devolvido ao aparelho.
+  detail    Json?
+  createdAt DateTime   @default(now())
+
+  farm Farm @relation(fields: [farmId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([farmId, createdAt])
+}
