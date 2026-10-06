@@ -39,7 +39,7 @@
     "test": "vitest run",
     "bundle": "expo export --platform android --output-dir dist",
     "web": "expo start --web",
-    "build:web": "expo export --platform web --output-dir dist"
+    "build:web": "expo export --platform web --output-dir dist && node scripts/web-postbuild.cjs"
   },
   "private": true
 }
