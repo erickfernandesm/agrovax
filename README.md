@@ -207,6 +207,24 @@ Para conferir localmente se o app empacota:
 npm run bundle -w @agrovax/mobile
 ```
 
+## Deploy da versão web (Cloudflare Pages)
+
+A versão web do app é um site estático. As chamadas para `/api/*` são encaminhadas à API pela
+função em `apps/mobile/functions/api`, usando a variável `API_ORIGIN` do projeto no Pages.
+
+```bash
+cd apps/mobile
+EXPO_PUBLIC_API_URL= npm run build:web
+npx wrangler@3 pages deploy dist --project-name agrovax
+```
+
+Depois de hospedar a API, defina `API_ORIGIN` (ex.: `https://api.exemplo.com.br`) em
+Settings > Environment variables do projeto e publique de novo. Sem essa variável, o site abre
+mas o login responde que o servidor não está configurado.
+
+A versão web guarda os dados no armazenamento do navegador, que é limitado a alguns megabytes.
+Ela serve para demonstração e uso leve; o produto é o aplicativo Android e iOS.
+
 ## Deploy da API
 
 A API é um processo Node comum e precisa de um PostgreSQL.

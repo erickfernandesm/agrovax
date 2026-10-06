@@ -38,7 +38,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "bundle": "expo export --platform android --output-dir dist",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "build:web": "expo export --platform web --output-dir dist"
   },
   "private": true
 }
