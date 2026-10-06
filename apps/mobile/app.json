@@ -1,0 +1,45 @@
+{
+  "expo": {
+    "name": "AgroVax",
+    "slug": "agrovax",
+    "scheme": "agrovax",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "app.agrovax.mobile"
+    },
+    "android": {
+      "package": "app.agrovax.mobile",
+      "adaptiveIcon": {
+        "backgroundColor": "#F5F4EF",
+        "foregroundImage": "./assets/android-icon-foreground.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "plugins": [
+      "expo-router",
+      "expo-status-bar",
+      "expo-secure-store",
+      "expo-sqlite",
+      "expo-font",
+      [
+        "expo-notifications",
+        {}
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "O AgroVax usa suas fotos para identificar os animais.",
+          "cameraPermission": "O AgroVax usa a câmera para fotografar os animais."
+        }
+      ]
+    ],
+    "web": {
+      "bundler": "metro",
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}
