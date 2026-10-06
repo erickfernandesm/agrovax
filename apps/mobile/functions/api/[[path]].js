@@ -28,6 +28,9 @@ export async function onRequest({ request, env, params }) {
   headers.delete('host');
   // A origem do navegador nao e repassada: para a API, a chamada vem do site.
   headers.delete('origin');
+  // Repassa o IP real do visitante, usado pelo limite de requisicoes da API.
+  const clientIp = request.headers.get('cf-connecting-ip');
+  if (clientIp) headers.set('x-forwarded-for', clientIp);
 
   try {
     return await fetch(target, {

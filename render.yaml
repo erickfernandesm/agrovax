@@ -1,0 +1,26 @@
+# Infraestrutura da API no Render (https://render.com).
+# O banco PostgreSQL e externo: informe a URL em DATABASE_URL.
+services:
+  - type: web
+    name: agrovax-api
+    runtime: node
+    plan: free
+    region: virginia
+    # Instala apenas a API e o pacote compartilhado (o app mobile nao e necessario aqui).
+    buildCommand: npm install -w @agrovax/api -w @agrovax/shared --include=dev && npm run build -w @agrovax/api
+    # As migrations pendentes sao aplicadas a cada inicio.
+    startCommand: npm run db:deploy -w @agrovax/api && npm run start -w @agrovax/api
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20.18.0
+      - key: NODE_ENV
+        value: production
+      # Dois proxies a frente da API: o do Render e o encaminhador do site.
+      - key: TRUST_PROXY
+        value: 2
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_ACCESS_SECRET
+        generateValue: true

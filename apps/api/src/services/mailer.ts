@@ -33,6 +33,24 @@ class SmtpMailer implements Mailer {
   }
 }
 
+/**
+ * Producao sem SMTP configurado: a mensagem NAO e enviada nem escrita no log
+ * (o log de producao nao deve conter codigos de recuperacao de senha).
+ */
+class DisabledMailer implements Mailer {
+  async send(message: MailMessage): Promise<void> {
+    logger.warn(
+      { subject: message.subject },
+      'E-mail nao enviado: SMTP nao configurado (defina SMTP_HOST).',
+    );
+  }
+}
+
 export function createMailer(): Mailer {
-  return env.SMTP_HOST ? new SmtpMailer() : new ConsoleMailer();
+  if (env.SMTP_HOST) return new SmtpMailer();
+  if (env.NODE_ENV === 'production') {
+    logger.warn('SMTP nao configurado: a recuperacao de senha por e-mail esta indisponivel.');
+    return new DisabledMailer();
+  }
+  return new ConsoleMailer();
 }
