@@ -1,0 +1,20 @@
+node_modules/
+dist/
+build/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+coverage/
+
+# banco local de desenvolvimento/teste (PostgreSQL embarcado)
+apps/api/.pgdata/
+apps/api/.pgdata-test/
+
+# expo
+.expo/
+apps/mobile/android/
+apps/mobile/ios/
+apps/mobile/dist/
+*.tsbuildinfo

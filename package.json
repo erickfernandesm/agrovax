@@ -1,0 +1,27 @@
+{
+  "name": "agrovax",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AgroVax - gestao sanitaria de bovinos e equinos (offline-first)",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "db:dev": "npm run db:dev -w @agrovax/api",
+    "db:stop": "npm run db:stop -w @agrovax/api",
+    "db:migrate": "npm run db:migrate -w @agrovax/api",
+    "db:seed": "npm run db:seed -w @agrovax/api",
+    "api": "npm run dev -w @agrovax/api",
+    "mobile": "npm run start -w @agrovax/mobile",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "overrides": {
+    "react": "19.2.3",
+    "react-dom": "19.2.3"
+  }
+}
